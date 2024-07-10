@@ -63,6 +63,7 @@ private:
     char *m_mem;
     u64 m_ulloffset;
     u64 m_nsize;
-	static u8 m_Sector0[512],m_Sector8[8],m_Sector32[349],m_Sector72[97];
+	static u8 m_Sector0[512],m_Sector2[512],m_Sector10[9],m_Sector34[349],m_Sector66[253],m_Sector70[12],m_Sector74[75],
+	          m_Sector78[132];
 };
 #endif
