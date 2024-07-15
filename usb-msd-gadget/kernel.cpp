@@ -23,8 +23,14 @@
 
 LOGMODULE ("kernel");
 
-#define MEM_STORAGE
+//#define MEM_STORAGE
 #define MEM_STORAGE_BLOCKS 16000
+
+#ifdef MEM_STORAGE
+ #define DEVICE_DESC "Memory"
+#else
+ #define DEVICE_DESC "EMMC"
+#endif
 
 
 
@@ -103,7 +109,6 @@ boolean CKernel::Initialize (void)
 		if(!bOK)failVal=6;
 	}
 
-
     if(bOK){
         m_ActLED.Blink(2,200,500);
 	} else {
@@ -119,18 +124,22 @@ TShutdownMode CKernel::Run (void)
 
 
     m_MSDGadget.SetDevice(m_pStgDevice);
-	unsigned count = 0;
+	LOGNOTE ("deviceblocks = %s ", m_Options.GetAppOptionString("deviceblocks","???") );
+	u64 numBlocks=m_Options.GetAppOptionDecimal("deviceblocks",MEM_STORAGE_BLOCKS);
+	m_MSDGadget.SetDeviceBlocks(numBlocks);	
+	LOGNOTE ("%s device, number of blocks = %d ", DEVICE_DESC, numBlocks );
+	unsigned count = m_Timer.GetTicks();
 	while (1)
 	{
 		if (m_MSDGadget.UpdatePlugAndPlay ())
 		{
           
 		}
-		CTimer::Get ()->MsDelay (25);
-        count++;
-		if(count > 100){
+		m_MSDGadget.Update();//IO
+		//CTimer::Get ()->MsDelay (25);
+		if(m_Timer.GetTicks() > count+200){
 		  m_ActLED.Blink(1,200,200);
-		  count =0;
+		  count =m_Timer.GetTicks();
 		}
 	}
 

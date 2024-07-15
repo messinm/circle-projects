@@ -26,7 +26,10 @@
 #include <circle/util.h>
 #include <assert.h>
 
-#define MLOGNOTE(From,...)		//CLogger::Get ()->Write (From, LogNotice, __VA_ARGS__)
+#define MLOGNOTE(From,...)		CLogger::Get ()->Write (From, LogNotice, __VA_ARGS__)
+#define MLOGDEBUG(From,...)		CLogger::Get ()->Write (From, LogDebug, __VA_ARGS__)
+#define MLOGERR(From,...)            CLogger::Get ()->Write (From, LogError,__VA_ARGS__)
+#define DEFAULT_BLOCKS 16000
 
 const TUSBDeviceDescriptor CUSBMSDGadget::s_DeviceDescriptor =
 {
@@ -71,7 +74,7 @@ const CUSBMSDGadget::TUSBMSTGadgetConfigurationDescriptor
 		DESCRIPTOR_ENDPOINT,
 		0x81, //IN number 1
 		2,			// bmAttributes (Bulk)
-		64,			// wMaxPacketSize
+		512,			// wMaxPacketSize
 		0		// bInterval
 	},
 	{
@@ -79,7 +82,7 @@ const CUSBMSDGadget::TUSBMSTGadgetConfigurationDescriptor
 		DESCRIPTOR_ENDPOINT,
 		0x02, //OUT number 2
 		2,			// bmAttributes (Bulk)
-		64,			// wMaxPacketSize
+		512,			// wMaxPacketSize
 		0   	// bInterval
 	}
 };
@@ -96,7 +99,7 @@ CUSBMSDGadget::CUSBMSDGadget (CInterruptSystem *pInterruptSystem, CDevice *pDevi
 	m_pDevice (pDevice),
 	m_pEP {nullptr, nullptr, nullptr}
 {
-
+	if(pDevice)SetDevice(pDevice);
 }
 
 CUSBMSDGadget::~CUSBMSDGadget (void)
@@ -171,12 +174,23 @@ void CUSBMSDGadget::SetDevice (CDevice* dev)
 	m_pDevice=dev;
 	u64 devSize=dev->GetSize();
 	//assert(devSize!=(u64)-1);
-	u32 blocks = devSize==(u64)-1?16000:devSize/512;
+	if(devSize==(u64)-1)MLOGERR("SetDevice","Device size not reported");
+	u64 blocks = devSize==(u64)-1?DEFAULT_BLOCKS:devSize/512;
+    InitDeviceSize(blocks);
+}
 
+void CUSBMSDGadget::InitDeviceSize(u64 blocks)
+{
 	u32 lastBlock=blocks-1;//address of last block
 	m_ReadCapReply.nLastBlockAddr=((lastBlock&0xFF)<<24)|((lastBlock&0xFF00)<<8)|((lastBlock&0xFF0000)>>8)|((lastBlock&0xFF000000)>>24);
 	m_FormatCapReply.numBlocks=((blocks&0xFF)<<24)|((blocks&0xFF00)<<8)|((blocks&0xFF0000)>>8)|((blocks&0xFF000000)>>24);
 	m_MSDReady = true;
+}
+
+//use when device does not report size
+void CUSBMSDGadget::SetDeviceBlocks(u64 numBlocks)
+{
+    InitDeviceSize(numBlocks);
 }
 
 void CUSBMSDGadget::CreateDevice (void)
@@ -223,7 +237,7 @@ const void *CUSBMSDGadget::ToStringDescriptor (const char *pString, size_t *pLen
 int CUSBMSDGadget::OnClassOrVendorRequest (const TSetupData *pSetupData, u8 *pData)
 {
 	if(pSetupData->bmRequestType==0xA1 && pSetupData->bRequest==0xfe){//get max LUN
-    	MLOGNOTE("OnClassOrVendorRequest", "state = %i",m_nState); 	  
+    	MLOGDEBUG("OnClassOrVendorRequest", "state = %i",m_nState); 	  
       pData[0]=0;		  
 	  return 1;
 	}
@@ -232,7 +246,7 @@ int CUSBMSDGadget::OnClassOrVendorRequest (const TSetupData *pSetupData, u8 *pDa
 
 void CUSBMSDGadget::OnTransferComplete (boolean bIn, size_t nLength)
 {
-	MLOGNOTE("OnXferComplete", "state = %i, dir = %s, len=%i ",m_nState,bIn?"IN":"OUT",nLength); 
+	MLOGDEBUG("OnXferComplete", "state = %i, dir = %s, len=%i ",m_nState,bIn?"IN":"OUT",nLength); 
 	assert(m_nState != TMSDState::Init);
 	if(bIn){//packet to host has been transferred
 	    switch(m_nState){
@@ -244,30 +258,12 @@ void CUSBMSDGadget::OnTransferComplete (boolean bIn, size_t nLength)
 			 }
 			case TMSDState::DataIn:
 			 {
-				u64 offset=0;
-				int readCount=0;
 			  if(m_nnumber_blocks>0){
 				if(m_MSDReady){
-					offset=m_pDevice->Seek(BLOCK_SIZE*m_nblock_address);
-					if(offset!=(u64)(-1)){
-					  readCount=m_pDevice->Read(m_InBuffer,BLOCK_SIZE);
-					  if(readCount < BLOCK_SIZE){
-						m_CSW.bmCSWStatus=MSD_CSW_STATUS_FAIL;
-						m_ReqSenseReply.bSenseKey = 2;
-						m_ReqSenseReply.bAddlSenseCode = 1;
-					  }
-					  if(readCount > 0){
-					    if((u32)readCount>m_nbyteCount)readCount=m_nbyteCount;
-						m_pEP[EPIn]->BeginTransfer(CUSBMSDGadgetEndpoint::TransferDataIn,m_InBuffer,readCount);
-						m_nnumber_blocks--;
-						m_nblock_address++;
-						m_nbyteCount-=readCount;
-						if(m_nbyteCount==0)m_nnumber_blocks=0;
-					  }
-				    }
+                  m_nState=TMSDState::DataInRead; //see Update function
 				}
-				if(!m_MSDReady || offset==(u64)(-1) || readCount < 0){
-					MLOGNOTE("onXferCmplt DataIn","failed, %s, offset=%i, readCount=%i",m_MSDReady?"ready":"not ready",offset,readCount);
+				else {
+					MLOGERR("onXferCmplt DataIn","failed, %s",m_MSDReady?"ready":"not ready");
 					m_CSW.bmCSWStatus=MSD_CSW_STATUS_FAIL;
 					m_ReqSenseReply.bSenseKey = 2;
 					m_ReqSenseReply.bAddlSenseCode = 1;
@@ -285,7 +281,7 @@ void CUSBMSDGadget::OnTransferComplete (boolean bIn, size_t nLength)
 			 }
 			 default:
 			 {
-			      MLOGNOTE("onXferCmplt","dir=in, unhandled state = %i", m_nState);
+			      MLOGERR("onXferCmplt","dir=in, unhandled state = %i", m_nState);
 				  assert(0);
 				  break;
 			 }
@@ -295,13 +291,13 @@ void CUSBMSDGadget::OnTransferComplete (boolean bIn, size_t nLength)
 			case TMSDState::ReceiveCBW:
 			 {
 			  if(nLength != SIZE_CBW){
-				MLOGNOTE("ReceiveCBW","Invalid CBW len = %i",nLength);
+				MLOGERR("ReceiveCBW","Invalid CBW len = %i",nLength);
 				m_pEP[EPIn]->StallRequest(true);
 				break;
 			  }
 			  memcpy(&m_CBW,m_OutBuffer,SIZE_CBW);
 			  if(m_CBW.dCBWSignature != VALID_CBW_SIG){
-				    MLOGNOTE("ReceiveCBW","Invalid CBW sig = 0x%x",m_CBW.dCBWSignature); 
+				    MLOGERR("ReceiveCBW","Invalid CBW sig = 0x%x",m_CBW.dCBWSignature); 
 				    m_pEP[EPIn]->StallRequest(true);
 					break;
 			  }
@@ -310,51 +306,28 @@ void CUSBMSDGadget::OnTransferComplete (boolean bIn, size_t nLength)
 			    HandleSCSICommand(); //will update m_nstate
 				break;
 			  } //todo - response for not meaningful CBW
+			  break;
 			 }
 			case TMSDState::DataOut:	  
 			 {
 				//process block from host
 				assert(m_nnumber_blocks>0);
-				u64 offset=0;
-				int writeCount=0;
 				if(m_MSDReady){
-					offset=m_pDevice->Seek(BLOCK_SIZE*m_nblock_address);
-					if(offset!=(u64)(-1)){
-					writeCount=m_pDevice->Write(m_OutBuffer,BLOCK_SIZE);
-					}
-					if(writeCount>0){
-					  if(writeCount<BLOCK_SIZE){
-						m_CSW.bmCSWStatus=MSD_CSW_STATUS_FAIL;
-						m_ReqSenseReply.bSenseKey = 0x2;
-						m_ReqSenseReply.bAddlSenseCode = 0x1;
-						SendCSW();
-						break;
-					  }
-					  m_nnumber_blocks--;
-					  m_nblock_address++;
-					  if(m_nnumber_blocks==0){ //done receiving data to host
-						SendCSW();
-						break;
-					  }
-					}
+				 m_nState=TMSDState::DataOutWrite; //see Update function					
 				}
-				if(!m_MSDReady || offset==(u64)(-1) || writeCount<=0){
-					MLOGNOTE("onXferCmplt DataOut","failed, %s, offset=%i, writeCount=%i",m_MSDReady?"ready":"not ready",offset,writeCount);
+				else{
+					MLOGERR("onXferCmplt DataOut","failed, %s",m_MSDReady?"ready":"not ready");
 					m_CSW.bmCSWStatus=MSD_CSW_STATUS_FAIL;
 					m_ReqSenseReply.bSenseKey = 2;
 					m_ReqSenseReply.bAddlSenseCode = 1;
 					SendCSW();
-				} else {
-					if(m_nnumber_blocks>0){ //get next block
-					  m_pEP[EPOut]->BeginTransfer(CUSBMSDGadgetEndpoint::TransferDataOut,m_OutBuffer,512);
-					}
-				}	
-				break;			
+				}
+				break;		
 			 }
 
 			 default:
 			 {
-			      MLOGNOTE("onXferCmplt","dir=out, unhandled state = %i", m_nState);
+			      MLOGERR("onXferCmplt","dir=out, unhandled state = %i", m_nState);
 				  assert(0);
 				  break;
 			 }
@@ -366,7 +339,8 @@ void CUSBMSDGadget::OnTransferComplete (boolean bIn, size_t nLength)
 // will be called before vendor request 0xfe
 void CUSBMSDGadget::OnActivate()
 {
-  MLOGNOTE("OnActivate", "state = %i",m_nState);
+  MLOGNOTE("MSD OnActivate", "state = %i",m_nState);
+  m_MSDReady=true; //TODO - detect if SD card is ready
   m_nState=TMSDState::ReceiveCBW;
   m_pEP[EPOut]->BeginTransfer(CUSBMSDGadgetEndpoint::TransferCBWOut,m_OutBuffer,SIZE_CBW); 	 
 }
@@ -429,6 +403,7 @@ void CUSBMSDGadget::HandleSCSICommand(){
 	case 0x1B: // Start/stop unit
 	 {
 		m_MSDReady = (m_CBW.CBWCB[4] >> 1) == 0;
+		MLOGNOTE("HandleSCSI","start/stop, %s",m_MSDReady?"ready":"not ready");
 		m_CSW.bmCSWStatus=MSD_CSW_STATUS_OK;
 		m_ReqSenseReply.bSenseKey = 0; 
         m_ReqSenseReply.bAddlSenseCode = 0;		
@@ -470,8 +445,6 @@ void CUSBMSDGadget::HandleSCSICommand(){
 	 }
     case 0x28: // Read (10)
 	 {
-		u64 offset=0;
-		int readCount=0;
 		if(m_MSDReady){
 		  m_CSW.bmCSWStatus=MSD_CSW_STATUS_OK;	 //will be updated if read fails on any block
 		  m_ReqSenseReply.bSenseKey = 0; 
@@ -482,26 +455,11 @@ void CUSBMSDGadget::HandleSCSICommand(){
 		  if(m_nnumber_blocks==0){
 			m_nnumber_blocks=1+(m_nbyteCount)/BLOCK_SIZE;
 		  }
-		  MLOGNOTE("Read(10)","addr = %u len = %u",m_nblock_address,m_nnumber_blocks); 
-		  offset=m_pDevice->Seek(BLOCK_SIZE*m_nblock_address);
-		  if(offset!=(u64)(-1)){
-			    readCount=m_pDevice->Read(m_InBuffer,BLOCK_SIZE); 
-				if(readCount < BLOCK_SIZE){
-						m_CSW.bmCSWStatus=MSD_CSW_STATUS_FAIL;
-						m_ReqSenseReply.bSenseKey = 2;
-						m_ReqSenseReply.bAddlSenseCode = 1;
-						SendCSW();
-						break;
-				}
-				m_pEP[EPIn]->BeginTransfer(CUSBMSDGadgetEndpoint::TransferDataIn,m_InBuffer,readCount);
-				m_nnumber_blocks--;
-				m_nblock_address++;
-				m_nbyteCount-=readCount;
-				m_nState=TMSDState::DataIn;	
-			}
+		  MLOGDEBUG("Read(10)","addr = %u len = %u",m_nblock_address,m_nnumber_blocks); 
+		  m_nState=TMSDState::DataInRead; //see Update() function
 		}
-        if(!m_MSDReady || offset==(u64)(-1)){
-		  MLOGNOTE("handleSCSI Read(10)","failed, %s, offset=%i",m_MSDReady?"ready":"not ready",offset);		
+         else {
+		  MLOGERR("handleSCSI Read(10)","failed, %s",m_MSDReady?"ready":"not ready");		
 		  m_CSW.bmCSWStatus=MSD_CSW_STATUS_FAIL;
 		  m_ReqSenseReply.bSenseKey = 2;
 		  m_ReqSenseReply.bAddlSenseCode = 1;
@@ -512,22 +470,18 @@ void CUSBMSDGadget::HandleSCSICommand(){
 
     case 0x2A: // Write (10)
 	 {
-		u64 offset=0;
 		if(m_MSDReady){
           m_nnumber_blocks = (u32)(m_CBW.CBWCB[7] << 8) | m_CBW.CBWCB[8]; //->big endian
 		  m_nblock_address = (u32)(m_CBW.CBWCB[2] << 24) | (u32)(m_CBW.CBWCB[3] << 16) | (u32)(m_CBW.CBWCB[4] << 8) | m_CBW.CBWCB[5];
-          offset=m_pDevice->Seek(BLOCK_SIZE*m_nblock_address);
-		  MLOGNOTE("Write(10)","addr = %u len = %u",m_nblock_address,m_nnumber_blocks); 
-		  if(offset!=(u64)(-1)){
-			m_pEP[EPOut]->BeginTransfer(CUSBMSDGadgetEndpoint::TransferDataOut,m_OutBuffer,512);
-			m_nState=TMSDState::DataOut;	
-			m_CSW.bmCSWStatus=MSD_CSW_STATUS_OK;	   //will be updated if write fails
-			m_ReqSenseReply.bSenseKey = 0; 
-			m_ReqSenseReply.bAddlSenseCode = 0;
-		  }
+		  MLOGDEBUG("Write(10)","addr = %u len = %u",m_nblock_address,m_nnumber_blocks); 
+		  m_pEP[EPOut]->BeginTransfer(CUSBMSDGadgetEndpoint::TransferDataOut,m_OutBuffer,512);
+		  m_nState=TMSDState::DataOut;	
+		  m_CSW.bmCSWStatus=MSD_CSW_STATUS_OK;	   //will be updated if write fails
+		  m_ReqSenseReply.bSenseKey = 0; 
+		  m_ReqSenseReply.bAddlSenseCode = 0;
 		}
-		if(!m_MSDReady || offset==(u64)(-1)){
-		  MLOGNOTE("handleSCSI write(10)","failed, %s, offset=%i",m_MSDReady?"ready":"not ready",offset);
+		else {
+		  MLOGERR("handleSCSI write(10)","failed, %s",m_MSDReady?"ready":"not ready");
 		  m_CSW.bmCSWStatus=MSD_CSW_STATUS_FAIL;
 		  m_ReqSenseReply.bSenseKey = 2;
 		  m_ReqSenseReply.bAddlSenseCode = 1;
@@ -556,5 +510,92 @@ void CUSBMSDGadget::HandleSCSICommand(){
 
   }
 }
+
+//this function is called periodically from task level for IO (IO must not be attempted in functions called from IRQ)
+void CUSBMSDGadget::Update()
+{
+ switch(m_nState){
+    case TMSDState::DataInRead: 
+	 {
+		u64 offset=0;
+		int readCount=0;
+		if(m_MSDReady){
+			offset=m_pDevice->Seek(BLOCK_SIZE*m_nblock_address);
+			MLOGDEBUG("UpdateRead","offset = %u ",offset); 
+			if(offset!=(u64)(-1)){
+					readCount=m_pDevice->Read(m_InBuffer,BLOCK_SIZE); 
+					if(readCount < BLOCK_SIZE){
+							MLOGERR("UpdateRead","readCount = %u ",readCount); 
+							m_CSW.bmCSWStatus=MSD_CSW_STATUS_FAIL;
+							m_ReqSenseReply.bSenseKey = 2;
+							m_ReqSenseReply.bAddlSenseCode = 1;
+							SendCSW();
+							break;
+					}
+					m_pEP[EPIn]->BeginTransfer(CUSBMSDGadgetEndpoint::TransferDataIn,m_InBuffer,readCount);
+					m_nnumber_blocks--;
+					m_nblock_address++;
+					m_nbyteCount-=readCount;
+					m_nState=TMSDState::DataIn;	
+			}
+		}
+        if(!m_MSDReady || offset==(u64)(-1)){
+		  MLOGERR("UpdateRead","failed, %s, offset=%i",m_MSDReady?"ready":"not ready",offset);		
+		  m_CSW.bmCSWStatus=MSD_CSW_STATUS_FAIL;
+		  m_ReqSenseReply.bSenseKey = 2;
+		  m_ReqSenseReply.bAddlSenseCode = 1;
+          SendCSW();
+		}
+        break;
+	 }	
+    case TMSDState::DataOutWrite:
+	 {
+				//process block from host
+		assert(m_nnumber_blocks>0);
+		u64 offset=0;
+		int writeCount=0;
+		if(m_MSDReady){
+			offset=m_pDevice->Seek(BLOCK_SIZE*m_nblock_address);
+			if(offset!=(u64)(-1)){
+				writeCount=m_pDevice->Write(m_OutBuffer,BLOCK_SIZE);
+			}
+			if(writeCount>0){
+				if(writeCount<BLOCK_SIZE){
+					MLOGERR("UpdateWrite","writeCount = %u ",writeCount);
+					m_CSW.bmCSWStatus=MSD_CSW_STATUS_FAIL;
+					m_ReqSenseReply.bSenseKey = 0x2;
+					m_ReqSenseReply.bAddlSenseCode = 0x1;
+					SendCSW();
+				    break;
+				}
+				m_nnumber_blocks--;
+				m_nblock_address++;
+				if(m_nnumber_blocks==0){ //done receiving data from host
+						SendCSW();
+						break;
+				}
+			}					
+		}
+		if(!m_MSDReady || offset==(u64)(-1) || writeCount<=0){
+				MLOGERR("UpdateWrite","failed, %s, offset=%i, writeCount=%i",m_MSDReady?"ready":"not ready",offset,writeCount);
+				m_CSW.bmCSWStatus=MSD_CSW_STATUS_FAIL;
+				m_ReqSenseReply.bSenseKey = 2;
+				m_ReqSenseReply.bAddlSenseCode = 1;
+				SendCSW();
+				break;
+		} else {
+			if(m_nnumber_blocks>0){ //get next block
+				m_pEP[EPOut]->BeginTransfer(CUSBMSDGadgetEndpoint::TransferDataOut,m_OutBuffer,512);
+				m_nState=TMSDState::DataOut;	
+			}
+		}	
+		break;			
+	}
+
+
+	//default:
+ }
+}
+
 
 

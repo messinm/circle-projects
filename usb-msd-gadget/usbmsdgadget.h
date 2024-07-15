@@ -143,6 +143,10 @@ public:
 
 	void SetDevice(CDevice* device); //block device for storage
 
+	void SetDeviceBlocks(u64 numBlocks); //used when device does not report size
+
+	void Update();//must be called periodically for IO operations
+
 	enum TMSDState {
 		Init,
 		ReceiveCBW,
@@ -150,7 +154,9 @@ public:
 		DataIn,
 		DataOut,
 		SentCSW,
-		SendReqSenseReply
+		SendReqSenseReply,
+		DataInRead,
+		DataOutWrite
 	};
 
 protected:
@@ -176,7 +182,10 @@ private:
 	void OnSuspend (void) override;
 
 	void HandleSCSICommand();
+
 	void SendCSW();
+
+	void InitDeviceSize(u64 blocks);
 
 private:
 	CDevice *m_pDevice;
