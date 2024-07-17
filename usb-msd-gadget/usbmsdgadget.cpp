@@ -182,9 +182,15 @@ void CUSBMSDGadget::SetDevice (CDevice* dev)
 void CUSBMSDGadget::InitDeviceSize(u64 blocks)
 {
 	u32 lastBlock=blocks-1;//address of last block
+	m_nDeviceBlocks=blocks;
 	m_ReadCapReply.nLastBlockAddr=((lastBlock&0xFF)<<24)|((lastBlock&0xFF00)<<8)|((lastBlock&0xFF0000)>>8)|((lastBlock&0xFF000000)>>24);
 	m_FormatCapReply.numBlocks=((blocks&0xFF)<<24)|((blocks&0xFF00)<<8)|((blocks&0xFF0000)>>8)|((blocks&0xFF000000)>>24);
 	m_MSDReady = true;
+}
+
+u64 CUSBMSDGadget::GetBlocks()
+{
+    return m_nDeviceBlocks;
 }
 
 //use when device does not report size

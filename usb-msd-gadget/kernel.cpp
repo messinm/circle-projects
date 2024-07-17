@@ -124,10 +124,13 @@ TShutdownMode CKernel::Run (void)
 
 
     m_MSDGadget.SetDevice(m_pStgDevice);
-	LOGNOTE ("deviceblocks = %s ", m_Options.GetAppOptionString("deviceblocks","???") );
-	u64 numBlocks=m_Options.GetAppOptionDecimal("deviceblocks",MEM_STORAGE_BLOCKS);
-	m_MSDGadget.SetDeviceBlocks(numBlocks);	
-	LOGNOTE ("%s device, number of blocks = %d ", DEVICE_DESC, numBlocks );
+	LOGNOTE ("cmdline deviceblocks = %s ", m_Options.GetAppOptionString("deviceblocks","[not specified]") );
+	u64 numBlocks=m_Options.GetAppOptionDecimal("deviceblocks",0);//MEM_STORAGE_BLOCKS);
+	if(numBlocks>0){
+		LOGNOTE ("overriding device size");
+		m_MSDGadget.SetDeviceBlocks(numBlocks);	
+	}
+	LOGNOTE ("%s device, number of blocks = %llu ", DEVICE_DESC, m_MSDGadget.GetBlocks() );
 	unsigned count = m_Timer.GetTicks();
 	while (1)
 	{

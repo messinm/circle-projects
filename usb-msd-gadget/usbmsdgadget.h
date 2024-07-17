@@ -147,6 +147,8 @@ public:
 
 	void Update();//must be called periodically for IO operations
 
+	u64 GetBlocks();
+
 	enum TMSDState {
 		Init,
 		ReceiveCBW,
@@ -234,6 +236,7 @@ private:
 	DMA_BUFFER (u8, m_InBuffer, MaxInMessageSize);
 	u32 m_nblock_address;
 	u32 m_nnumber_blocks;
+	u64 m_nDeviceBlocks=0;
 	u32 m_nbyteCount;
 	boolean m_MSDReady=false;
 };
